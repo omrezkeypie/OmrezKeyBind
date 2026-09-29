@@ -16,7 +16,7 @@ local DEFAULT_GRACE_PERIOD = 0.45
 
 local Contexts : {[string] : Types.Context} = {}
 local Keybinds: Types.Keybinds = {}
-local OriginalKeybinds : Types.Keybinds = {}
+local OriginalBindings : {[string] : {[string] : Types.Binding}} = {}
 local ActionActivatedBinds : Types.ActionBinds = {}
 local ActionDeactivatedBinds : Types.ActionBinds = {}
 local InputQueue : {Types.QueuedInput} = {}
@@ -161,18 +161,17 @@ local function SetupButton(Button: TextButton | ImageButton, ActionName: string)
 	ButtonConnections[ActionName] = {Began,Ended}
 end
 
-local function SetupBinding(Binding : Types.Binding,Input : Types.InputTypes,ActionName : string) : boolean?
+local function SetupBinding(Binding : Types.Binding,Input : Types.InputTypes,ActionName : string,DeviceName : string) : boolean?
 	if not Keybinds[Input] then
 		Keybinds[Input] = {}
-		OriginalKeybinds[Input] = {}
 	end
 
 	local NewKeybind = {
 		ActionName = ActionName,
+		Device = DeviceName,
 		Priority = Binding.Priority or 1,
 	}
 
-	table.insert(OriginalKeybinds[Input],NewKeybind)
 	table.insert(Keybinds[Input],NewKeybind)
 		
 	return Binding.Toggle == true
@@ -182,7 +181,7 @@ local function SetupDeviceBinding(Binding : Types.Binding,ActionName : string,To
 	local Inputs : {Types.InputTypes} = if typeof(Binding.Input) == "table" then Binding.Input else {Binding.Input}
 	
 	for _, Input in Inputs do
-		SetupBinding(Binding, Input, ActionName)
+		SetupBinding(Binding, Input, ActionName, DeviceName)
 	end
 end
 
@@ -194,6 +193,7 @@ local function SetupActions(Actions : {[string] : Types.Action}) : Types.Toggled
 		ActionDeactivatedBinds[ActionName] = {}
 		ToggleKeybinds[ActionName] = {}
 		ActionActiveStates[ActionName] = {}
+		OriginalBindings[ActionName] = {}
 		
 		for DeviceName,Binding : Types.Binding in pairs(ActionBindings) do
 			if DeviceName == "Button" then
@@ -206,6 +206,11 @@ local function SetupActions(Actions : {[string] : Types.Action}) : Types.Toggled
 				SetupButton(Button, ActionName)			
 			else
 				SetupDeviceBinding(Binding,ActionName,ToggleKeybinds,DeviceName)
+				local OriginalBinding = table.clone(Binding)
+				if typeof(Binding.Input) == "table" then
+					OriginalBinding.Input = table.clone(Binding.Input)
+				end
+				OriginalBindings[ActionName][DeviceName] = OriginalBinding
 			end
 			
 			ActionActiveStates[ActionName][DeviceName] = false			
@@ -222,10 +227,12 @@ end
 local function GetHighestPriorityAction(Input : Enum.KeyCode | Enum.UserInputType | string) : string?
 	local HighestPriority = -math.huge
 	local HighestAction
+	local DeviceName = GetCurrentDevice()
 
 	if not Keybinds[Input] then return end
 
 	for _,Binding in Keybinds[Input] do
+		if Binding.Device ~= DeviceName then continue end
 		if Binding.Priority <= HighestPriority then continue end
 
 		local Context = GetContextFromActionName(Binding.ActionName)
@@ -458,120 +465,115 @@ local function BindToActionDeactivated(ActionName : string,Callback : Types.Call
 	end
 end
 
-local function GetActionKeybind(ActionName : string) : Types.InputTypes?
-	for Binding,Keybind in Keybinds do
-		for _,ActionData in Keybind do
-			if ActionData.ActionName ~= ActionName then continue end
-
-			return Binding
-		end
-	end
-
-	return
+local function CopyInput(Input : Types.KeybindInput) : Types.KeybindInput
+	return if typeof(Input) == "table" then table.clone(Input) else Input
 end
 
-local function SetActionKeybind(ActionName : string,NewBinding : Types.InputTypes)
-	local CurrentBinding = AssertDefined(GetActionKeybind(ActionName))
-	if not CurrentBinding then return end
-	
-	local RemoveIndex
+local function GetDeviceBinding(ActionName : string,DeviceName : string) : Types.Binding?
+	if DeviceName ~= Devices.PC and DeviceName ~= Devices.Gamepad and DeviceName ~= Devices.Touch then
+		return nil
+	end
+	local Context = GetContextFromActionName(ActionName)
+	if not Context then return nil end
+	local Action = Context.Actions[ActionName]
+	if DeviceName == Devices.PC then return Action.PC end
+	if DeviceName == Devices.Gamepad then return Action.Gamepad end
+	return Action.Touch
+end
 
-	for Index,Keybind in Keybinds[CurrentBinding] do
-		if Keybind.ActionName == ActionName then
-			RemoveIndex = Index
+local function GetActionKeybind(ActionName : string,DeviceName : string?) : Types.KeybindInput?
+	local Binding = GetDeviceBinding(ActionName,DeviceName or GetCurrentDevice())
+	return if Binding then CopyInput(Binding.Input) else nil
+end
 
-			break
+local function ReplaceBindingInput(ActionName : string,DeviceName : string,Binding : Types.Binding,Input : Types.KeybindInput)
+	-- Remove only this device's entries, including every input of an old combo.
+	for _,Bindings in Keybinds do
+		for Index = #Bindings,1,-1 do
+			local BoundKeybind = Bindings[Index]
+			if BoundKeybind.ActionName == ActionName and BoundKeybind.Device == DeviceName then
+				table.remove(Bindings,Index)
+			end
 		end
 	end
-
-	local Binding = Keybinds[CurrentBinding][RemoveIndex]
-
-	table.remove(Keybinds[CurrentBinding],RemoveIndex)
-
-	if not Keybinds[NewBinding] then
-		Keybinds[NewBinding] = {}
+	Binding.Input = CopyInput(Input)
+	local Inputs = if typeof(Binding.Input) == "table" then Binding.Input else {Binding.Input}
+	for _,NewInput in Inputs do
+		SetupBinding(Binding,NewInput,ActionName,DeviceName)
 	end
+	CleanupComboState(ActionName)
+end
 
-	table.insert(Keybinds[NewBinding],Binding)
+local function SetActionKeybind(ActionName : string,NewBinding : Types.KeybindInput,DeviceName : string?)
+	local Device = DeviceName or GetCurrentDevice()
+	local Binding = AssertDefined(GetDeviceBinding(ActionName,Device),ActionName.." has no input binding for "..Device)
+	if typeof(NewBinding) == "table" then
+		assert(#NewBinding > 0,"A keybind input list cannot be empty")
+	else
+		-- A single input replaces the combo with a normal keybind.
+		Binding.Combo = nil
+	end
+	ReplaceBindingInput(ActionName,Device,Binding,NewBinding)
 end
 
 local function SetActionCombo(ActionName : string,Inputs : {Types.InputTypes},Combo : Types.Combo)
 	local DeviceName = GetCurrentDevice()
-	local Context = AssertDefined(GetContextFromActionName(ActionName))
-		
-	local Binding : Types.Binding = Context.Actions[ActionName][DeviceName]
+	local Binding = AssertDefined(GetDeviceBinding(ActionName,DeviceName))
+	assert(#Inputs > 0,"A combo input list cannot be empty")
 	Binding.Combo = Combo
-	Binding.Input = Inputs
-	
-	for _,Input in Inputs do
-		local newKeybind = {
-			ActionName = ActionName,
-			Priority = Binding.Priority or 1,
-		}
-		if not Keybinds[Input] then Keybinds[Input] = {} end
-		
-		table.insert(Keybinds[Input],newKeybind)
-	end
+	ReplaceBindingInput(ActionName,DeviceName,Binding,Inputs)
 end
 
 local function ResetActionCombo(ActionName : string,Input : Types.InputTypes)
 	local DeviceName = GetCurrentDevice()
-	local Context = AssertDefined(GetContextFromActionName(ActionName))
-	
-	local Binding = Context.Actions[ActionName][DeviceName]
+	local Binding = AssertDefined(GetDeviceBinding(ActionName,DeviceName))
 	if not Binding.Combo then return end
 	
 	Binding.Combo = nil
-		
-	for _,OldInput in Binding.Input do
-		local Indexes = {}
-		
-		for KeybindInput,Keybind in Keybinds do
-			for Index,BoundKeybind in Keybind do
-				if BoundKeybind.ActionName ~= ActionName then continue end
-							
-				table.insert(Indexes,Index)
-			end
-		end
-		
-		for _,Index in Indexes do
-			table.remove(Keybinds[OldInput],Index)
-		end
-	end
-	
-	Binding.Input = Input
-	
-	if not Keybinds[Input] then
-		Keybinds[Input] = {}
-	end
-	
-	local newKeybind = {
-		ActionName = ActionName,
-		Priority = Binding.Priority or 1,
-	}
-	
-	table.insert(Keybinds[Input],newKeybind)
+	ReplaceBindingInput(ActionName,DeviceName,Binding,Input)
 end
 
 local function ResetActionKeybinds()
-	Keybinds = table.clone(OriginalKeybinds)
+	for ActionName,DeviceBindings in OriginalBindings do
+		for DeviceName,OriginalBinding in DeviceBindings do
+			local Binding = AssertDefined(GetDeviceBinding(ActionName,DeviceName))
+			Binding.Combo = OriginalBinding.Combo
+			ReplaceBindingInput(ActionName,DeviceName,Binding,OriginalBinding.Input)
+		end
+	end
 end
 
-local function GetCustomKeybinds() : {[string] : Types.InputTypes}
-	local CustomKeybinds = {}
+local function GetCustomKeybinds() : Types.CustomKeybinds
+	local CustomKeybinds : Types.CustomKeybinds = {}
 
-	for KeyCode,Bindings in Keybinds do
-		for _,Binding in Bindings do
-			CustomKeybinds[Binding.ActionName] = KeyCode
+	for _,Context in Contexts do
+		for ActionName,_ in Context.Actions do
+			local DeviceBindings : {[string] : Types.KeybindInput} = {}
+			for _,DeviceName in {Devices.PC,Devices.Gamepad,Devices.Touch} do
+				local Binding = GetDeviceBinding(ActionName,DeviceName)
+				if Binding then
+					DeviceBindings[DeviceName] = CopyInput(Binding.Input)
+				end
+			end
+			if next(DeviceBindings) then
+				CustomKeybinds[ActionName] = DeviceBindings
+			end
 		end
 	end
 
 	return CustomKeybinds
 end
 
-local function LoadCustomKeybinds(CustomKeybinds : {[string] : Types.InputTypes})
-	for ActionName,KeyCode in CustomKeybinds do
-		SetActionKeybind(ActionName,KeyCode)
+local function LoadCustomKeybinds(CustomKeybinds : Types.CustomKeybinds | Types.LegacyCustomKeybinds)
+	for ActionName,DeviceBindings in CustomKeybinds do
+		if typeof(DeviceBindings) == "table" and #DeviceBindings == 0 then
+			for DeviceName,Input in DeviceBindings :: {[string] : Types.KeybindInput} do
+				SetActionKeybind(ActionName,Input,DeviceName)
+			end
+		else
+			-- Legacy flat saves apply to the current device, just like the setter.
+			SetActionKeybind(ActionName,DeviceBindings :: Types.KeybindInput)
+		end
 	end
 end
 

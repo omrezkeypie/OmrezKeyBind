@@ -264,10 +264,18 @@ BindToActionDeactivated(ActionName : string,Callback : (GameProcessed : boolean,
 Adds a callback function to the provided action. When the action's inputs are deactivated, all callbacks under that action get called. Callbacks receive `GameProcessed` and `Data` which holds any data related to the input. Returns a disconnect function that removes that specific callback.
 
 ```lua
-SetActionKeybind(ActionName : string,NewBinding : Enum.KeyCode | Enum.UserInputType)
+SetActionKeybind(ActionName : string,NewBinding : InputTypes | {InputTypes},DeviceName : string?)
 ```
 
-Sets a specific actions input keybind.
+Sets an action's input for one device (`"PC"`, `"Gamepad"`, or `"Touch"`). If `DeviceName` is omitted, the current input device is used. An explicit device lets a settings menu change keyboard controls even while the player is using a gamepad. Other devices and actions sharing the previous input are preserved.
+
+```lua
+OmrezKeyBind.SetActionKeybind("Run", Enum.KeyCode.X, OmrezKeyBind.Devices.PC)
+OmrezKeyBind.SetActionKeybind("Run", Enum.KeyCode.ButtonL3, OmrezKeyBind.Devices.Gamepad)
+OmrezKeyBind.SetActionKeybind("Run", OmrezKeyBind.Touch.Swipe, OmrezKeyBind.Devices.Touch)
+```
+
+`InputTypes` means `Enum.KeyCode | Enum.UserInputType | string` (touch gestures use strings). A nonempty input array preserves its order and the device's existing combo configuration. A single input replaces a combo with a normal keybind. Unknown actions, unsupported devices, missing device bindings, and empty input arrays raise an error. Use the button binding APIs for GUI buttons.
 
 ```lua
 ResetActionKeybinds()
@@ -276,22 +284,39 @@ ResetActionKeybinds()
 Resets all actions keybinds to default. to what is declared in the CreateContexts function call.
 
 ```lua
-GetCustomKeybinds() : {[string] : Enum.KeyCode | Enum.UserInputType}
+GetCustomKeybinds() : {[string] : {[string] : InputTypes | {InputTypes}}}
 ```
 
-Returns a table where the key is the action name and the value is the keybind it corresponds to.
+Returns a snapshot indexed by action name, then device. This includes every PC, gamepad, and touch binding, and keeps combo inputs as ordered arrays. GUI button instances are excluded; their connections are managed separately by the button APIs. Changing the returned arrays does not change the active bindings.
 
 ```lua
-LoadCustomKeybinds(CustomKeybinds : {[string] : Enum.KeyCode | Enum.UserInputType})
+local Saved = OmrezKeyBind.GetCustomKeybinds()
+-- Saved.Run = {
+--     PC = Enum.KeyCode.X,
+--     Gamepad = Enum.KeyCode.ButtonL3,
+--     Touch = OmrezKeyBind.Touch.Swipe,
+-- }
 ```
 
-Gets passed a table in the format that GetCustomKeybinds returns and sets all actions keybind to what is specified in the table.
+This device-indexed format replaces the old flat action-to-input return value. Update callers that previously read `Saved.Run` to read `Saved.Run.PC` (or the appropriate device). Enum values still need serialization before storage in a Roblox DataStore.
 
 ```lua
-GetActionKeybind(ActionName : string) : Enum.KeyCode? | Enum.UserInputType?
+LoadCustomKeybinds(CustomKeybinds : {[string] : {[string] : InputTypes | {InputTypes}}})
 ```
 
-Returns what keybind a specific action has.
+Loads the snapshot returned by `GetCustomKeybinds`, applying each input to its named device regardless of the current device. Partial snapshots update only the listed device bindings. Combo arrays update inputs using the combo configuration already defined for that device; query functions and GUI buttons are not part of the snapshot.
+
+Legacy flat tables such as `{Run = Enum.KeyCode.X}` are also accepted and apply to the current device. Old saves cannot recover device bindings that were overwritten by the previous `GetCustomKeybinds` implementation.
+
+```lua
+GetActionKeybind(ActionName : string,DeviceName : string?) : (InputTypes | {InputTypes})?
+```
+
+Returns the input for the specified device, or the current device when omitted. Combo inputs are returned as a copied, ordered array. Returns `nil` if the action has no input binding for that device.
+
+```lua
+local KeyboardInput = OmrezKeyBind.GetActionKeybind("Run", OmrezKeyBind.Devices.PC)
+```
 
 ```lua
 BindButtonToAction(ActionName : string,Button : TextButton | ImageButton)

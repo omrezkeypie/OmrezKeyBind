@@ -1,11 +1,13 @@
+export type Combo = {
+	GracePeriod : number,
+	HoldInputs : {InputTypes},
+	Query : (ComboInputs : {InputTypes},QueuedInput : InputTypes,ExpectedInput : InputTypes,ComboState : ComboState) -> string,
+}
+
 export type Binding = {
 	Input : InputTypes | {InputTypes},
 	Toggle : boolean?,
-	Combo : {
-		GracePeriod : number,
-		HoldInputs : {InputTypes},
-		Query : (ComboInputs : {InputTypes},QueuedInput : InputTypes,ExpectedInput : InputTypes,ComboState : ComboState) -> string
-	}?,
+	Combo : Combo?,
 	Priority : number?,
 }
 
@@ -72,11 +74,16 @@ export type ActionBinds = {
 
 export type InputTypes = Enum.UserInputType | Enum.KeyCode | string
 
+export type KeybindInput = InputTypes | {InputTypes}
+export type CustomKeybinds = {[string] : {[string] : KeybindInput}}
+export type LegacyCustomKeybinds = {[string] : KeybindInput}
+
 export type Keybinds = {
 	[InputTypes] : {
 		{
 			Priority : number,
 			ActionName : string,
+			Device : string,
 		}
 	}
 }
